@@ -20,14 +20,14 @@ TICKET_CATEGORIES = [
 ]
 
 # Category where ticket channels are created
-TICKET_CATEGORY_NAME = "Tickets"
+TICKET_CATEGORY_NAME = "Ticket"
 
 # Data files
 TICKETS_FILE = "tickets.json"
 STATUS_FILE = "status.json"
 
 # Status channel name
-STATUS_CHANNEL_NAME = "🎟️〡order-here"
+STATUS_CHANNEL_NAME = "order-here"
 
 # ============================================
 
@@ -188,7 +188,7 @@ def build_order_preview_embed(guild_id: int, channel_id: int):
     if not ticket:
         # Fallback embed if something goes wrong
         embed = discord.Embed(
-            title="Philly Eats • Preview",
+            title="OneEats • Preview",
             description="Unable to load order preview.",
             color=0x00AEFF,
         )
@@ -206,7 +206,7 @@ def build_order_preview_embed(guild_id: int, channel_id: int):
     delivery_notes = details.get("delivery_notes", "N/A")
 
     embed = discord.Embed(
-        title="Philly Eats – Helper",
+        title="OneEats – Helper",
         description="**Before you order...**\nReview your info before submitting your ticket.",
         color=0x00AEFF,
     )
@@ -235,7 +235,7 @@ def build_order_preview_embed(guild_id: int, channel_id: int):
     embed.add_field(name="📦 Delivery Type:", value=delivery_type or "Leave at my door", inline=False)
     embed.add_field(name="📝 Delivery Notes:", value=delivery_notes or "N/A", inline=False)
 
-    embed.set_footer(text="Philly Eats • Preview")
+    embed.set_footer(text="OneEats • Preview")
     embed.timestamp = datetime.now()
     return embed
 
@@ -405,8 +405,8 @@ class OrderFormView(discord.ui.View):
             item.disabled = True
 
         embed = build_order_preview_embed(self.guild_id, self.channel_id)
-        embed.title = "Philly Eats – Order Submitted"
-        embed.set_footer(text="Order submitted • Philly Eats")
+        embed.title = "OneEats – Order Submitted"
+        embed.set_footer(text="Order submitted • OneEats")
 
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.channel.send(
@@ -650,7 +650,7 @@ async def panel(interaction: discord.Interaction):
         return
 
     embed = discord.Embed(
-        title="🎫 Philly Eats - Support Tickets",
+        title="🎫 OneEats - Support Tickets",
         description=(
             "Need help? Create a ticket by clicking one of the buttons below!\n\n"
             "**📝 New Order** - Submit a new group order\n"
@@ -776,66 +776,126 @@ async def status(interaction: discord.Interaction, state: app_commands.Choice[st
         return
 
     is_open = state.value == "open"
+    guild = interaction.guild
 
-    status_channel = discord.utils.get(
-        interaction.guild.channels, name=STATUS_CHANNEL_NAME
-    )
+    # 1) Make sure we only ever grab a TEXT channel, not a category
+    status_channel=interaction.channel
+
+    # Fallback: first text channel that looks like order/status
     if not status_channel:
-        for channel in interaction.guild.text_channels:
-            if "order" in channel.name.lower() or "status" in channel.name.lower():
-                status_channel = channel
+        for ch in guild.text_channels:
+            if "order" in ch.name.lower() or "status" in ch.name.lower():
+                status_channel = ch
                 break
 
     if not status_channel:
         await interaction.response.send_message(
-            f"❌ Couldn't find status channel. Please create a channel named `{STATUS_CHANNEL_NAME}` or use this command in the channel where you want status updates.",
+            f"❌ Couldn't find a text channel for status. "
+            f"Create a text channel named `{STATUS_CHANNEL_NAME}` "
+            f"or rename an existing one.",
             ephemeral=True,
         )
         return
 
-    current_status = get_server_status(interaction.guild_id)
+    # 2) Check the bot's permissions in that channel
+    me = guild.me
+    perms = status_channel.permissions_for(me)
+
+    # Debug print to your console so you can see exactly what the perms are
+    print(f"[DEBUG] Status channel = {status_channel} (id={status_channel.id})")
+    print(f"[DEBUG] Bot perms there: send_messages={perms.send_messages}, "
+          f"embed_links={perms.embed_links}, view_channel={perms.view_channel}, "
+          f"read_message_history={perms.read_message_history}")
+
+    if not perms.view_channel or not perms.send_messages or not perms.embed_links:
+        await interaction.response.send_message(
+            "❌ I don't have the right permissions in "
+            f"{status_channel.mention}.\n\n"
+            "I need **View Channel**, **Send Messages**, and **Embed Links** "
+            "in that channel.",
+            ephemeral=True,
+        )
+        return
+
+    # 3) Delete previous status message if we know about it
+    current_status = get_server_status(guild.id)
 
     if current_status.get("message_id") and current_status.get("channel_id"):
         try:
-            old_channel = interaction.guild.get_channel(
-                int(current_status["channel_id"])
-            )
-            if old_channel:
+            old_channel = guild.get_channel(int(current_status["channel_id"]))
+            if isinstance(old_channel, discord.TextChannel):
                 old_message = await old_channel.fetch_message(
                     int(current_status["message_id"])
                 )
                 await old_message.delete()
-        except Exception:
-            pass
+        except Exception as e:
+            print("[DEBUG] Failed to delete old status message:", repr(e))
 
-    if is_open:
-        embed = discord.Embed(
-            title="🟢 We're Open!",
-            description="Tap **Order** below to send us your details.\n\nReady to take your orders now! 🍽️",
-            color=0x00FF00,
+    # 4) Build embed + view, then send with try/except so we don't hard-crash
+    try:
+        if is_open:
+            embed = discord.Embed(
+                title="🟢 We're Open!",
+                description=(
+                    "Tap **Order** below to send us your details.\n\n"
+                    "Ready to take your orders now! 🍽️"
+                ),
+                color=0x00FF00,
+            )
+            embed.add_field(name="Status", value="✅ Taking Orders", inline=True)
+            embed.set_footer(text="OneEats")
+            view = TicketPanel()
+            message = await status_channel.send(embed=embed, view=view)
+        else:
+            embed = discord.Embed(
+                title="🔴 We're Closed",
+                description=(
+                    "Sorry, we're not taking orders right now.\n\n"
+                    "Check back later! 😊"
+                ),
+                color=0xFF0000,
+            )
+            embed.add_field(name="Status", value="❌ Closed", inline=True)
+            embed.set_footer(text="OneEats")
+            message = await status_channel.send(embed=embed)
+
+        embed.timestamp = datetime.now()
+
+    except discord.Forbidden as e:
+        # Even after the permission check, Discord said no
+        print("[ERROR] Forbidden when sending to status channel:", repr(e))
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "❌ Discord is blocking me from sending a message in that channel. "
+                "Double-check the channel/category permissions for the bot "
+                "(View, Send, Embed Links).",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "❌ Discord is blocking me from sending a message in that channel. "
+                "Double-check the channel/category permissions for the bot "
+                "(View, Send, Embed Links).",
+                ephemeral=True,
+            )
+        return
+
+    # 5) Save status + respond to user
+    set_server_status(guild.id, is_open, message.id, status_channel.id)
+
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            f"✅ Status updated to: **{'🟢 OPEN' if is_open else '🔴 CLOSED'}**\n"
+            f"Message sent in {status_channel.mention}",
+            ephemeral=True,
         )
-        embed.add_field(name="Status", value="✅ Taking Orders", inline=True)
-        embed.set_footer(text="Philly Eats")
-        view = TicketPanel()
-        message = await status_channel.send(embed=embed, view=view)
     else:
-        embed = discord.Embed(
-            title="🔴 We're Closed",
-            description="Sorry, we're not taking orders right now.\n\nCheck back later! 😊",
-            color=0xFF0000,
+        await interaction.followup.send(
+            f"✅ Status updated to: **{'🟢 OPEN' if is_open else '🔴 CLOSED'}**\n"
+            f"Message sent in {status_channel.mention}",
+            ephemeral=True,
         )
-        embed.add_field(name="Status", value="❌ Closed", inline=True)
-        embed.set_footer(text="Philly Eats")
-        message = await status_channel.send(embed=embed)
 
-    embed.timestamp = datetime.now()
-
-    set_server_status(interaction.guild_id, is_open, message.id, status_channel.id)
-
-    await interaction.response.send_message(
-        f"✅ Status updated to: **{'🟢 OPEN' if is_open else '🔴 CLOSED'}**\nMessage sent in {status_channel.mention}",
-        ephemeral=True,
-    )
 
 
 # ========== RUN BOT ==========
