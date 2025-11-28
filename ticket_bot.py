@@ -27,7 +27,7 @@ TICKETS_FILE = "tickets.json"
 STATUS_FILE = "status.json"
 
 # Status channel name
-STATUS_CHANNEL_NAME = "order-status"
+STATUS_CHANNEL_NAME = "order-here"
 
 # ============================================
 
